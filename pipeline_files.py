@@ -33,7 +33,7 @@ _logger.setLevel(31)  # bypass WARNING logging level
 # TODO do logger stuff
 
 GLOBAL_TIMEOUT = 1  # seconds
-SAMPLE_RATE = 22050  # see if this messes with anything
+SAMPLE_RATE = 16000  # see if this messes with anything
 shutdown_event = Event()
 
 
@@ -53,7 +53,6 @@ async def render_worker(
     # imports MUST be here and not in top level else tensorflow multiprocessing will break
     from essentia.standard import MonoLoader, TensorflowPredictEffnetDiscogs
 
-    synth = symusic.Synthesizer(sample_rate=SAMPLE_RATE)
     loader = MonoLoader(sampleRate=SAMPLE_RATE, resampleQuality=1)
     embedding_model = TensorflowPredictEffnetDiscogs(
         graphFilename=embedding_gfn, output="PartitionedCall:1"
@@ -65,7 +64,7 @@ async def render_worker(
             try:
                 async with asyncio.timeout(120):
                     result = render_and_embed(
-                        file_path, loader, embedding_model, synth, SAMPLE_RATE
+                        file_path, loader, embedding_model
                     )
             except TimeoutError:
                 print(f"Render worker timed out on {file_path}")
@@ -92,8 +91,6 @@ async def analysis_worker(
 
     max_num_tags = 5 if type == "mood" else 4
     tag_threshold = 0.02 if type == "mood" else 0.05
-    with open(metadata, "r") as json_file:
-        json_metadata = json.load(json_file)
     last_active = time.time()
     model = TensorflowPredict2D(graphFilename=model_gfn)
     while not shutdown_event.is_set():
@@ -106,7 +103,7 @@ async def analysis_worker(
                     tags = get_mtg_tags(
                         embedding,
                         model,
-                        json_metadata,
+                        metadata,
                         max_num_tags=max_num_tags,
                         tag_threshold=tag_threshold,
                     )

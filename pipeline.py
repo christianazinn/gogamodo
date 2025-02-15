@@ -29,6 +29,8 @@ os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 GLOBAL_TIMEOUT = 1  # seconds
 shutdown_event = Event()
 
+# TODO figure out why there is a delta between the original implementation and this one
+# also use the existing dataset annotations when captioning
 
 def run_async(fn, *args, **kwargs):
     asyncio.run(fn(*args, **kwargs))
@@ -46,7 +48,7 @@ async def render_worker(
     # imports MUST be here and not in top level else tensorflow multiprocessing will break
     from essentia.standard import MonoLoader, TensorflowPredictEffnetDiscogs
 
-    loader = MonoLoader(sampleRate=16000, resampleQuality=1)
+    # loader = MonoLoader(sampleRate=16000, resampleQuality=1)
     embedding_model = TensorflowPredictEffnetDiscogs(
         graphFilename=embedding_gfn, output="PartitionedCall:1"
     )
@@ -56,8 +58,7 @@ async def render_worker(
             # Render and embed audio
             try:
                 async with asyncio.timeout(120):
-                    # TODO which is the bottleneck?
-                    result = render_and_embed(file_path, loader, embedding_model)
+                    result = render_and_embed(file_path, None, embedding_model)
             except TimeoutError:
                 print(f"Render worker timed out on {file_path}")
                 result = None
@@ -67,11 +68,9 @@ async def render_worker(
                 continue
             audio_file_path, embedding = result
             # Put same embedding in both analysis queues
-            # print("Render worker putting to queues")
             mood_queue.put((file_path, embedding))
             genre_queue.put((file_path, embedding))
             chord_queue.put((file_path, audio_file_path))
-            # TODO PLEASE WORK
             midi_queue.put(file_path)
         except Empty:
             continue
@@ -106,6 +105,9 @@ async def analysis_worker(
                     )
             except TimeoutError:
                 print(f"{type} worker timed out on {file_path}")
+                tags = None
+            except TypeError:
+                print(f"{type} worker got a type error on {file_path}")
                 tags = None
 
             result = {type: tags}
@@ -364,7 +366,7 @@ def main():
                         to_send_failed.append(failed_file)
                         if len(to_send_failed) > args.batch_size:
                             failure_response = requests.post(url=args.host_api + "/fail", data={"results": to_send_failed})
-                            print(f"Sent batch fail! {failure_response.status_code}")
+                            print(f"Sent fail batch @ {time.strftime('%Y-%m-%d %H:%M:%S')}! {failure_response.status_code}")
                             to_send_failed = []
                         if failed_file in results:
                             del results[failed_file]
@@ -398,7 +400,7 @@ def main():
                         to_send_success.append(fmt)
                         if len(to_send_success) > args.batch_size:
                             success_response = requests.post(url=args.host_api + "/batch", json={"results": to_send_success})
-                            print(f"Sent batch! {success_response.status_code}")
+                            print(f"Sent batch @ {time.strftime('%Y-%m-%d %H:%M:%S')}! {success_response.status_code}")
                             to_send_success = []
                         del results[file_path]
                         ct += 1
