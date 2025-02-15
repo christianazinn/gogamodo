@@ -442,8 +442,8 @@ def main():
     finally:
         print(f"{failed_count} files failed of {total}.")
         print("Cleaning up processes...")
-        requests.post(url=args.host_api + "/batch", data={"results": to_send_success})
-        requests.post(url=args.host_api + "/fail", data={"results": to_send_failed})
+        requests.post(url=args.host_api + "/batch", json={"results": to_send_success})
+        requests.post(url=args.host_api + "/fail", json={"results": to_send_failed})
         shutdown_event.set()
 
         for manager in all_managers:
