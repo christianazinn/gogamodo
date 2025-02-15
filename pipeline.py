@@ -1,8 +1,8 @@
 import asyncio
 import csv
-import json
 import logging
 import os
+import requests
 import sys
 import time
 import warnings
@@ -208,6 +208,9 @@ class DynamicPoolManager:
             p.start()
             self.processes.append(p)
 
+        if (backlog > len(self.processes) * self.backlog_factor):
+            print(f"Some worker's backlog is high: {backlog}")
+
         # Clean up finished processes
         self.processes = [p for p in self.processes if p.is_alive()]
 
@@ -337,14 +340,14 @@ def main():
     sofar_count = 0
     fail_timeout = 0
     last_time = time.time()
+    to_send_failed = []
+    to_send_success = []
 
     # TODO goon
     # TODO better logging with logger
     try:
-        with (
-            open(args.output_file, "w") as out_json,
-            open(args.failed_file, "w") as failed_json,
-        ):
+        # i think it wants a ctxmanager for whatever reason???
+        with open("config.cfg") as nothing:
             while ct + failed_count < total:  # Main control loop
                 # monitor logic here maybe
                 if time.time() - last_time > args.monitor_interval:
@@ -358,10 +361,13 @@ def main():
                 try:
                     while True:  # Process all available failed renders
                         failed_file = failed_renders_queue.get_nowait()
-                        failed_json.write(json.dumps({"name": failed_file}) + "\n")
-                        failed_json.flush()
+                        to_send_failed.append(failed_file)
+                        if len(to_send_failed) > args.batch_size:
+                            failure_response = requests.post(url=args.host_api + "/fail", data={"results": to_send_failed})
+                            print(f"Sent batch fail! {failure_response.status_code}")
+                            to_send_failed = []
                         if failed_file in results:
-                            del failed_file
+                            del results[failed_file]
                         failed_count += 1
                 except Empty:
                     pass  # No more failed renders to process
@@ -383,17 +389,21 @@ def main():
                         os.remove(file_path)
                         del rst["chords"]["audio_file"]
                         fmt = (
-                            {"name": os.path.basename(file_path).split('.')[0]}
+                            {"md5": os.path.basename(file_path).split('.')[0]}
                             | rst["genre"]
                             | rst["mood"]
                             | rst["midi"]
                             | rst["chords"]
                         )
-                        out_json.write(json.dumps(fmt) + "\n")
-                        out_json.flush()
+                        to_send_success.append(fmt)
+                        if len(to_send_success) > args.batch_size:
+                            success_response = requests.post(url=args.host_api + "/batch", json={"results": to_send_success})
+                            print(f"Sent batch! {success_response.status_code}")
+                            to_send_success = []
                         del results[file_path]
                         ct += 1
                     sofar_count = 0
+                    fail_timeout = 0
                 except Empty:
                     sofar_count += 1
                     if sofar_count > 10:
@@ -432,6 +442,8 @@ def main():
     finally:
         print(f"{failed_count} files failed of {total}.")
         print("Cleaning up processes...")
+        requests.post(url=args.host_api + "/batch", data={"results": to_send_success})
+        requests.post(url=args.host_api + "/fail", data={"results": to_send_failed})
         shutdown_event.set()
 
         for manager in all_managers:

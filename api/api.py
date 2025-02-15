@@ -51,7 +51,18 @@ class ResultBatch(BaseModel):
 async def receive_batch(batch: ResultBatch):
     try:
         # Write results to a file
-        with open("received_results.jsonl", "a") as f:
+        with open("results.jsonl", "a") as f:
+            for result in batch.results:
+                f.write(json.dumps(result) + "\n")
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/fail")
+async def receive_batch(batch: ResultBatch):
+    try:
+        # Write results to a file
+        with open("failures.jsonl", "a") as f:
             for result in batch.results:
                 f.write(json.dumps(result) + "\n")
         return {"status": "success"}
@@ -60,3 +71,5 @@ async def receive_batch(batch: ResultBatch):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=6979)
+
+# fastapi run api.py --port 6979
