@@ -3,6 +3,7 @@ import csv
 import logging
 import os
 import requests
+import subprocess
 import sys
 import time
 import warnings
@@ -13,7 +14,6 @@ from queue import Empty
 
 from utils import (
     DotConfigParser,
-    render_and_embed,
     get_mtg_tags,
     extract_chords,
     extract_midi_features,
@@ -29,8 +29,14 @@ os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 GLOBAL_TIMEOUT = 1  # seconds
 shutdown_event = Event()
 
-# TODO figure out why there is a delta between the original implementation and this one
-# also use the existing dataset annotations when captioning
+# TODO use the existing dataset annotations when captioning
+# TODO rewrite some of the test.json few shot cases
+# TODO figure out how the hell this will work on n gpus if tensorflow doesn't like it:
+#      split dataset into n batches and run with CUDA_VISIBLE_DEVICES?
+# yes: use os.getenv(CVD) to determine worker number and put # gpus in config
+# then stuff queue start at index through index. try on cheap instance first
+# TODO update api to handle at least gpu # and subsplits aznd etc
+# wait, do you even need a gpu? see what it looks like with cpu inference
 
 def run_async(fn, *args, **kwargs):
     asyncio.run(fn(*args, **kwargs))
@@ -48,7 +54,7 @@ async def render_worker(
     # imports MUST be here and not in top level else tensorflow multiprocessing will break
     from essentia.standard import MonoLoader, TensorflowPredictEffnetDiscogs
 
-    # loader = MonoLoader(sampleRate=16000, resampleQuality=1)
+    loader = MonoLoader(sampleRate=16000, resampleQuality=1)
     embedding_model = TensorflowPredictEffnetDiscogs(
         graphFilename=embedding_gfn, output="PartitionedCall:1"
     )
@@ -58,19 +64,35 @@ async def render_worker(
             # Render and embed audio
             try:
                 async with asyncio.timeout(120):
-                    result = render_and_embed(file_path, None, embedding_model)
-            except TimeoutError:
-                print(f"Render worker timed out on {file_path}")
-                result = None
-            if result is None:
-                print(f"failed: {file_path}")
+                    prefix = os.path.dirname(file_path)
+                    suffix = os.path.basename(file_path).split(".")[0]
+                    audio_file = os.path.join(prefix, suffix + ".wav")
+                    subprocess.run(
+                        [
+                            "fluidsynth",
+                            "-q",
+                            "-ni",
+                            "models/FluidR3_GM.sf2",
+                            file_path,
+                            "-F",
+                            audio_file,
+                            "-r",
+                            "16000",
+                        ],
+                        stderr=subprocess.DEVNULL,
+                    )
+                    if audio_file is None or not os.path.exists(audio_file):
+                        return None
+                    loader.configure(filename=audio_file, sampleRate=16000, resampleQuality=1)
+                    audio = loader()
+                    embeddings = embedding_model(audio)
+            except Exception:
+                print(f"Render worker exception on {file_path}")
                 failed_renders_queue.put(file_path)
                 continue
-            audio_file_path, embedding = result
-            # Put same embedding in both analysis queues
-            mood_queue.put((file_path, embedding))
-            genre_queue.put((file_path, embedding))
-            chord_queue.put((file_path, audio_file_path))
+            mood_queue.put((file_path, embeddings))
+            genre_queue.put((file_path, embeddings))
+            chord_queue.put((file_path, audio_file))
             midi_queue.put(file_path)
         except Empty:
             continue
@@ -86,13 +108,11 @@ async def analysis_worker(
     model = TensorflowPredict2D(graphFilename=model_gfn)
     while not shutdown_event.is_set():
         try:
-            # print(f"{type} worker waiting for get")
             file_path, embedding = input_queue.get(timeout=GLOBAL_TIMEOUT)
             last_active = time.time()
-            # print(f"{type} worker gotten")
 
-            max_num_tags = 5 if type == "mood" else 4
-            tag_threshold = 0.02 if type == "mood" else 0.05
+            # max_num_tags = 5 if type == "mood" else 4
+            # tag_threshold = 0.02 if type == "mood" else 0.05
 
             try:
                 async with asyncio.timeout(120):
@@ -100,8 +120,8 @@ async def analysis_worker(
                         embedding,
                         model,
                         metadata,
-                        max_num_tags=max_num_tags,
-                        tag_threshold=tag_threshold,
+                        max_num_tags=None,
+                        tag_threshold=None,
                     )
             except TimeoutError:
                 print(f"{type} worker timed out on {file_path}")
@@ -111,7 +131,6 @@ async def analysis_worker(
                 tags = None
 
             result = {type: tags}
-            # print(f"{type} worker completed task")
 
             results_queue.put((file_path, type, result))
 
@@ -129,17 +148,14 @@ async def chord_worker(audio_queue, results_queue, idle_threshold):
     chord_estimator = Chordino()
     while not shutdown_event.is_set():
         try:
-            # print("Chord worker waiting for get")
             file_path, audio_file_path = audio_queue.get(timeout=GLOBAL_TIMEOUT)
             last_active = time.time()
-            # print("Chord worker gotten")
             try:
                 async with asyncio.timeout(120):
                     features = extract_chords(audio_file_path, chord_estimator)
             except TimeoutError:
                 print(f"Chord worker timed out on {file_path}")
                 features = None
-            # print("Chord worker writing")
             results_queue.put((file_path, "chords", features))
         except Empty:
             if time.time() - last_active > idle_threshold:

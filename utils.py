@@ -16,12 +16,12 @@ def get_mtg_tags(embeddings, tag_model, tag_json, max_num_tags=5, tag_threshold=
     # TODO handle TypeError: Error cannot convert argument LIST_EMPTY to MATRIX_REAL
     predictions = tag_model(embeddings)
     mean_act = np.mean(predictions, 0)
-    ind = np.argpartition(mean_act, -max_num_tags)[-max_num_tags:]
+    ind = np.argpartition(mean_act, -max_num_tags)[-max_num_tags:] if max_num_tags is not None else np.arange(len(mean_act))
     tags = []
     confidence_score = []
     for i in ind:
         # print(metadata['classes'][i] + str(mean_act[i]))
-        if mean_act[i] > tag_threshold:
+        if tag_threshold is None or mean_act[i] > tag_threshold:
             tags.append(metadata["classes"][i])
             confidence_score.append(mean_act[i])
     ind = np.argsort(-np.array(confidence_score))
@@ -183,36 +183,6 @@ def give_me_final_seq(chords):
 
 
 # -------------------------------------------------
-
-
-# TODO why in the gods green fuck does it work if you instantiate a new monoloader for each audio file
-# but not otherwise?????????
-def render_and_embed(file, loader, embedding_model):
-    from essentia.standard import MonoLoader
-    prefix = os.path.dirname(file)
-    suffix = os.path.basename(file).split(".")[0]
-    audio_file = os.path.join(prefix, suffix + ".wav")
-    subprocess.run(
-        [
-            "fluidsynth",
-            "-q",
-            "-ni",
-            "models/FluidR3_GM.sf2",
-            file,
-            "-F",
-            audio_file,
-            "-r",
-            "16000",
-        ],
-        stderr=subprocess.DEVNULL,
-    )
-    if audio_file is None or not os.path.exists(audio_file):
-        return None
-    audio = MonoLoader(sampleRate=16000, resampleQuality=1, filename=audio_file)()
-    # loader.configure(filename=audio_file, sampleRate=16000, resampleQuality=1)
-    # audio = loader()
-    embeddings = embedding_model(audio)
-    return audio_file, embeddings
 
 
 def extract_chords(audio_file, chord_estimator):

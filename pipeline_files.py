@@ -3,7 +3,7 @@ import csv
 import json
 import logging
 import os
-import symusic
+import subprocess
 import sys
 import time
 import warnings
@@ -53,7 +53,7 @@ async def render_worker(
     # imports MUST be here and not in top level else tensorflow multiprocessing will break
     from essentia.standard import MonoLoader, TensorflowPredictEffnetDiscogs
 
-    loader = MonoLoader(sampleRate=SAMPLE_RATE, resampleQuality=1)
+    loader = MonoLoader(sampleRate=16000, resampleQuality=1)
     embedding_model = TensorflowPredictEffnetDiscogs(
         graphFilename=embedding_gfn, output="PartitionedCall:1"
     )
@@ -63,21 +63,37 @@ async def render_worker(
             # Render and embed audio
             try:
                 async with asyncio.timeout(120):
-                    result = render_and_embed(
-                        file_path, loader, embedding_model
+                    prefix = os.path.dirname(file_path)
+                    suffix = os.path.basename(file_path).split(".")[0]
+                    audio_file = os.path.join(prefix, suffix + ".wav")
+                    subprocess.run(
+                        [
+                            "fluidsynth",
+                            "-q",
+                            "-ni",
+                            "models/FluidR3_GM.sf2",
+                            file_path,
+                            "-F",
+                            audio_file,
+                            "-r",
+                            "16000",
+                        ],
+                        stderr=subprocess.DEVNULL,
                     )
-            except TimeoutError:
-                print(f"Render worker timed out on {file_path}")
-                result = None
-            if result is None:
-                print(f"failed: {file_path}")
+                    if audio_file is None or not os.path.exists(audio_file):
+                        return None
+                    loader.configure(filename=audio_file, sampleRate=16000, resampleQuality=1)
+                    audio = loader()
+                    embeddings = embedding_model(audio)
+                    print(embeddings)
+            except Exception:
+                print(f"Render worker exception on {file_path}")
                 failed_renders_queue.put(file_path)
                 continue
-            audio_file_path, embedding = result
             # Put same embedding in both analysis queues
-            mood_queue.put((file_path, embedding))
-            genre_queue.put((file_path, embedding))
-            chord_queue.put((file_path, audio_file_path))
+            mood_queue.put((file_path, embeddings))
+            genre_queue.put((file_path, embeddings))
+            chord_queue.put((file_path, audio_file))
             midi_queue.put(file_path)
         except Empty:
             continue
