@@ -185,9 +185,10 @@ async def midi_worker(instrumentmap, midi_queue, results_queue, idle_threshold):
             continue
 
 
-def stuff_queue(md5s_queue: Queue, split, th):
+def stuff_queue(md5s_queue: Queue, split, th, total):
     i = 0
     dataset = load_dataset("Metacreation/GigaMIDI", split=split)
+    if total != len(dataset): raise RuntimeError(f"mismatched lengths for split {split}")
     while True:
         while md5s_queue.qsize() < th:
             try:
@@ -296,7 +297,7 @@ def main():
 
     p = Process(
         target=stuff_queue,
-        args=(file_paths_queue, args.split, args.maintain_backlog),
+        args=(file_paths_queue, args.split, args.maintain_backlog, args.total),
     )
     print("Spun up queue stuffer")
     p.start()
@@ -381,7 +382,7 @@ def main():
                         failed_file = failed_renders_queue.get_nowait()
                         to_send_failed.append(failed_file)
                         if len(to_send_failed) > args.batch_size:
-                            failure_response = requests.post(url=args.host_api + "/fail", data={"results": to_send_failed})
+                            failure_response = requests.post(url=args.host_api + "/fail", json={"results": to_send_failed, "split": args.split, "worker_num": 0})
                             print(f"Sent fail batch @ {time.strftime('%Y-%m-%d %H:%M:%S')}! {failure_response.status_code}")
                             to_send_failed = []
                         if failed_file in results:
@@ -415,7 +416,7 @@ def main():
                         )
                         to_send_success.append(fmt)
                         if len(to_send_success) > args.batch_size:
-                            success_response = requests.post(url=args.host_api + "/batch", json={"results": to_send_success})
+                            success_response = requests.post(url=args.host_api + "/batch", json={"results": to_send_success, "split": args.split, "worker_num": 0})
                             print(f"Sent batch @ {time.strftime('%Y-%m-%d %H:%M:%S')}! {success_response.status_code}")
                             to_send_success = []
                         del results[file_path]
@@ -460,8 +461,8 @@ def main():
     finally:
         print(f"{failed_count} files failed of {total}.")
         print("Cleaning up processes...")
-        requests.post(url=args.host_api + "/batch", json={"results": to_send_success})
-        requests.post(url=args.host_api + "/fail", json={"results": to_send_failed})
+        requests.post(url=args.host_api + "/batch", json={"results": to_send_success, "split": args.split, "worker_num": 0})
+        requests.post(url=args.host_api + "/fail", json={"results": to_send_failed, "split": args.split, "worker_num": 0})
         shutdown_event.set()
 
         for manager in all_managers:

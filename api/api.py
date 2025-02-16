@@ -46,12 +46,14 @@ app = FastAPI(lifespan=lifespan)
 
 class ResultBatch(BaseModel):
     results: List[dict]
+    split: str
+    worker_num: int
 
 @app.post("/batch")
 async def receive_batch(batch: ResultBatch):
     try:
         # Write results to a file
-        with open("results.jsonl", "a") as f:
+        with open(f"{batch.split}-{batch.worker_num}.jsonl", "a") as f:
             for result in batch.results:
                 f.write(json.dumps(result) + "\n")
         return {"status": "success"}
@@ -62,7 +64,7 @@ async def receive_batch(batch: ResultBatch):
 async def receive_batch(batch: ResultBatch):
     try:
         # Write results to a file
-        with open("failures.jsonl", "a") as f:
+        with open(f"fail-{batch.split}-{batch.worker_num}.jsonl", "a") as f:
             for result in batch.results:
                 f.write(json.dumps(result) + "\n")
         return {"status": "success"}
