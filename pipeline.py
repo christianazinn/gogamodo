@@ -33,7 +33,6 @@ shutdown_event = Event()
 # TODO use the existing dataset annotations when captioning
 # TODO rewrite some of the test.json few shot cases
 
-# TODO maybe you just use cpu inference lmao
 # TODO figure out what the missing 1k files are from the test set
 
 def run_async(fn, *args, **kwargs):
@@ -195,8 +194,9 @@ def stuff_queue(md5s_queue: Queue, split, th, total, begin_from = 0):
                     score = symusic.Score.from_midi(music_bytes, ttype="quarter")
                     qpm = score.tempos[0].qpm if len(score.tempos) > 0 else 120
                     dur_secs = (score.end() - score.start()) / qpm * 60
-                    if dur_secs > 15 * 60:
+                    if dur_secs > 30 * 60:
                         print(f"index {i} is over length at {dur_secs} seconds, skipping")
+                        i += 1
                         continue
                 except Exception as e:
                     # print(f"asdf {e}")
@@ -368,6 +368,8 @@ def main():
     failed_count = 0
     sofar_count = 0
     fail_timeout = 0
+    asdf = 0
+    asd = 0
     last_time = time.time()
     to_send_failed = []
     to_send_success = []
@@ -425,9 +427,14 @@ def main():
                             | rst["chords"]
                         )
                         to_send_success.append(fmt)
-                        if len(to_send_success) > args.batch_size:
+                        if len(to_send_success) >= args.batch_size:
                             success_response = requests.post(url=args.host_api + "/batch", json={"results": to_send_success, "split": args.split, "worker_num": 0})
                             print(f"Sent batch @ {time.strftime('%Y-%m-%d %H:%M:%S')}! {success_response.status_code}")
+                            asdf += 1
+                            if asdf >= 10:
+                                asdf = 0
+                                asd += 1
+                                requests.post("https://ntfy.sh/phantasmagoria", data=f"{args.split} run at {asd}0k processed".encode(encoding='utf-8'))
                             to_send_success = []
                         del results[file_path]
                         ct += 1
@@ -473,6 +480,7 @@ def main():
         print("Cleaning up processes...")
         requests.post(url=args.host_api + "/batch", json={"results": to_send_success, "split": args.split, "worker_num": 0})
         requests.post(url=args.host_api + "/fail", json={"results": to_send_failed, "split": args.split, "worker_num": 0})
+        requests.post("https://ntfy.sh/phantasmagoria", data=f"{args.split} run complete".encode(encoding='utf-8'))
         shutdown_event.set()
 
         for manager in all_managers:
