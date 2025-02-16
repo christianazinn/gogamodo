@@ -5,6 +5,7 @@ import os
 import requests
 import subprocess
 import sys
+import symusic
 import time
 import warnings
 
@@ -31,12 +32,9 @@ shutdown_event = Event()
 
 # TODO use the existing dataset annotations when captioning
 # TODO rewrite some of the test.json few shot cases
-# TODO figure out how the hell this will work on n gpus if tensorflow doesn't like it:
-#      split dataset into n batches and run with CUDA_VISIBLE_DEVICES?
-# yes: use os.getenv(CVD) to determine worker number and put # gpus in config
-# then stuff queue start at index through index. try on cheap instance first
-# TODO update api to handle at least gpu # and subsplits aznd etc
-# wait, do you even need a gpu? see what it looks like with cpu inference
+
+# TODO maybe you just use cpu inference lmao
+# TODO figure out what the missing 1k files are from the test set
 
 def run_async(fn, *args, **kwargs):
     asyncio.run(fn(*args, **kwargs))
@@ -185,16 +183,27 @@ async def midi_worker(instrumentmap, midi_queue, results_queue, idle_threshold):
             continue
 
 
-def stuff_queue(md5s_queue: Queue, split, th, total):
-    i = 0
+def stuff_queue(md5s_queue: Queue, split, th, total, begin_from = 0):
+    i = begin_from
     dataset = load_dataset("Metacreation/GigaMIDI", split=split)
     if total != len(dataset): raise RuntimeError(f"mismatched lengths for split {split}")
     while True:
         while md5s_queue.qsize() < th:
             try:
+                music_bytes = dataset[i]["music"]
+                try:
+                    score = symusic.Score.from_midi(music_bytes, ttype="quarter")
+                    qpm = score.tempos[0].qpm if len(score.tempos) > 0 else 120
+                    dur_secs = (score.end() - score.start()) / qpm * 60
+                    if dur_secs > 15 * 60:
+                        print(f"index {i} is over length at {dur_secs} seconds, skipping")
+                        continue
+                except Exception as e:
+                    # print(f"asdf {e}")
+                    continue
                 fname = "./temp/" + dataset[i]["md5"] + ".mid"
                 with open(fname, "wb") as f:
-                    f.write(dataset[i]["music"])
+                    f.write(music_bytes)
                 md5s_queue.put(fname)
                 i += 1
             except Exception as e:
@@ -273,6 +282,7 @@ def main():
     config = DotConfigParser()
     config.read("config.cfg")
     args = config.parse_args()
+    os.makedirs("temp", exist_ok=True)
 
     # Create queues for distributing work to render pool
     file_paths_queue = Queue()
@@ -297,7 +307,7 @@ def main():
 
     p = Process(
         target=stuff_queue,
-        args=(file_paths_queue, args.split, args.maintain_backlog, args.total),
+        args=(file_paths_queue, args.split, args.maintain_backlog, args.total, args.begin_from),
     )
     print("Spun up queue stuffer")
     p.start()
